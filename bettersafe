@@ -1,0 +1,170 @@
+#!/bin/bash
+
+# bettersafe - A simple CLI for creating snapper snapshots
+
+# Check if running with sudo privileges
+if [ "$EUID" -ne 0 ]; then
+    echo "This script requires sudo privileges to create snapshots."
+    echo "Re-running with sudo..."
+    exec sudo "$0" "$@"
+    exit $?
+fi
+
+# Check if snapper is installed
+if ! command -v snapper &> /dev/null; then
+    echo "Error: snapper is not installed. Please install it first."
+    echo "For Ubuntu/Debian: sudo apt install snapper"
+    echo "For Fedora: sudo dnf install snapper"
+    echo "For Arch Linux: sudo pacman -S snapper"
+    exit 1
+fi
+
+# Function to calculate time difference
+calculate_time_diff() {
+    local prev_time="$1"
+    local curr_time="$2"
+    
+    # Convert times to seconds since epoch
+    prev_seconds=$(date -d "$prev_time" +%s)
+    curr_seconds=$(date -d "$curr_time" +%s)
+    
+    # Calculate difference in seconds
+    diff_seconds=$((curr_seconds - prev_seconds))
+    
+    # Calculate days, hours, minutes
+    days=$((diff_seconds / 86400))
+    diff_seconds=$((diff_seconds % 86400))
+    hours=$((diff_seconds / 3600))
+    diff_seconds=$((diff_seconds % 3600))
+    minutes=$((diff_seconds / 60))
+    
+    # Construct the time difference string
+    time_diff=""
+    if [ $days -gt 0 ]; then
+        if [ $days -eq 1 ]; then
+            time_diff="${time_diff}${days} day"
+        else
+            time_diff="${time_diff}${days} days"
+        fi
+    fi
+    
+    if [ $hours -gt 0 ]; then
+        if [ -n "$time_diff" ]; then
+            time_diff="${time_diff}, "
+        fi
+        if [ $hours -eq 1 ]; then
+            time_diff="${time_diff}${hours} hour"
+        else
+            time_diff="${time_diff}${hours} hours"
+        fi
+    fi
+    
+    if [ $minutes -gt 0 ] || [ -z "$time_diff" ]; then
+        if [ -n "$time_diff" ]; then
+            time_diff="${time_diff}, "
+        fi
+        if [ $minutes -eq 1 ]; then
+            time_diff="${time_diff}${minutes} minute"
+        else
+            time_diff="${time_diff}${minutes} minutes"
+        fi
+    fi
+    
+    echo "$time_diff"
+}
+
+# Function to create a snapshot with the given description
+create_snapshot() {
+    local description="$1"
+    
+    # Remove any quotation marks from the description
+    description="${description//\"/}"
+    description="${description//\'/}"
+    
+    # Create the snapshot using snapper
+    result=$(snapper create --description "$description" 2>&1)
+    exit_code=$?
+    
+    if [ $exit_code -eq 0 ]; then
+        # Extract the snapshot number from the result
+        snapshot_number=$(echo "$result" | grep -oP 'Created snapshot \K[0-9]+')
+        echo "Snapshot generated:"
+        
+        # Get all snapshots and find the current one
+        all_snapshots=$(snapper list)
+        
+        # Extract the header and the current snapshot line
+        header=$(echo "$all_snapshots" | head -n 2)
+        current_snapshot=$(echo "$all_snapshots" | grep -E "^\s*$snapshot_number\s+")
+        
+        if [ -n "$current_snapshot" ]; then
+            # Display header and current snapshot
+            echo "$header"
+            echo "$current_snapshot"
+            
+            # Find the previous snapshot (the one with the highest number before the current one)
+            prev_snapshot=""
+            prev_snapshot_number=0
+            
+            while read -r line; do
+                # Extract snapshot number from the line
+                line_number=$(echo "$line" | awk '{print $1}')
+                
+                # Check if it's a valid number and less than the current snapshot number
+                if [[ "$line_number" =~ ^[0-9]+$ ]] && [ "$line_number" -lt "$snapshot_number" ] && [ "$line_number" -gt "$prev_snapshot_number" ]; then
+                    prev_snapshot="$line"
+                    prev_snapshot_number="$line_number"
+                fi
+            done < <(echo "$all_snapshots" | tail -n +3)
+            
+            if [ -n "$prev_snapshot" ]; then
+                # Extract timestamps for time difference calculation
+                current_date=$(echo "$current_snapshot" | awk '{print $3, $4}')
+                prev_date=$(echo "$prev_snapshot" | awk '{print $3, $4}')
+                
+                # Calculate time difference
+                time_diff=$(calculate_time_diff "$prev_date" "$current_date")
+                
+                echo -e "\nPrevious snapshot:"
+                echo "$header"
+                echo "$prev_snapshot"
+                echo -e "\nLast snapshot was taken $time_diff ago."
+            else
+                echo -e "\nThis is the first snapshot."
+            fi
+        else
+            echo "Snapshot #$snapshot_number with description: $description"
+            echo "Run 'snapper list' for more details."
+        fi
+    else
+        echo "Error creating snapshot: $result"
+        exit 1
+    fi
+}
+
+# Main script logic
+description=""
+interactive_mode=true
+
+# Parse command line arguments
+while getopts "d:" opt; do
+    case $opt in
+        d)
+            description="$OPTARG"
+            interactive_mode=false
+            ;;
+        \?)
+            echo "Usage: bettersafe [-d description]"
+            exit 1
+            ;;
+    esac
+done
+
+# If no description provided, enter interactive mode
+if [ "$interactive_mode" = true ]; then
+    echo "Enter a description for the snapshot:"
+    read -r description
+fi
+
+# Create the snapshot
+create_snapshot "$description"
