@@ -1,4 +1,4 @@
-local/# Better-Safe
+# Better Safe - On Demand Snapper Snapshot CLI
 
 A simple command-line interface for creating BTRFS snapshots using snapper.
 
